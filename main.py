@@ -33,7 +33,7 @@ max_delay = 1.0  # Maximum delay of 1 second
 min_delay = 0.2  # Minimum delay of 0.7 seconds
 
 # Task to spam messages with random intervals and incremental delay
-@tasks.loop(seconds=2)
+@tasks.loop(seconds=3)
 async def spam():
     if bot.channel is None:
         bot.channel = bot.get_channel(1278580578593148978)  # Your channel ID here
