@@ -2,8 +2,10 @@ import os
 import random
 import string
 import asyncio
+import logging
 import discord
 from discord.ext import commands, tasks
+from aiohttp import web
 
 # Install discord.py-self if not already installed
 os.system('pip install discord.py-self && pip install --upgrade pip')
@@ -69,10 +71,28 @@ async def self_pinger():
 async def before_self_pinger():
     await bot.wait_until_ready()
 
+async def start_http_server():
+    try:
+        app = web.Application()
+        app.router.add_get('/', lambda request: web.Response(text="Bot is running"))
+        runner = web.AppRunner(app)
+        await runner.setup()
+        port = int(os.getenv("PORT", 8080))
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        print(f"HTTP server started on port {port}")
+    except Exception as e:
+        logger.error(f"Failed to start HTTP server: {e}")
+        print("Failed to start HTTP server.")
+
+
 @bot.event
 async def on_ready():
+    await start_http_server()
     print(f'Logged in as {bot.user.name}')
     spam.start()  # Start the spam task when the bot is ready
     self_pinger.start()  # Start the self-pinger to keep the bot alive
 
-bot.run(TOKEN)
+
+
+bot.run(token)
