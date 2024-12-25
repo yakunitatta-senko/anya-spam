@@ -12,7 +12,7 @@ from aiohttp import web
 load_dotenv()
 token = os.getenv("TOKEN")
 
-# Create a bot instance with sharding (manual control)
+# Create a bot instance
 bot = commands.Bot(command_prefix="!", help_command=None, self_bot=True)
 bot.channel = None
 
@@ -22,14 +22,6 @@ logger = logging.getLogger(__name__)
 
 # Shared state for bot task control
 bot_running = {"spam": True}
-
-# Maximum messages before hard stop
-MAX_MESSAGES = 1e6  # Adjust as needed
-
-# Delay settings
-initial_delay = 0.001  # Start with 1 ms delay for push mode
-max_delay = 1.0  # Maximum delay of 1 second
-min_delay = 0.2  # Minimum delay of 0.2 seconds
 
 # Task to spam messages
 @tasks.loop(seconds=3)
@@ -51,39 +43,22 @@ async def spam():
 async def before_spam():
     await bot.wait_until_ready()
 
-# Task for self-pinging to keep the bot alive
-@tasks.loop(seconds=60)
-async def self_pinger():
-    if bot.channel is not None and bot_running["spam"]:
-        try:
-            await bot.channel.send("Pong!")
-        except discord.HTTPException as e:
-            logger.error(f"Error during self-ping: {e}")
-
-@self_pinger.before_loop
-async def before_self_pinger():
-    await bot.wait_until_ready()
-
-# HTTP server to control the bot
+# HTTP server to toggle tasks on any ping
 async def handle_ping(request):
     global bot_running
-    action = request.query.get("action", "").lower()
-    print(f"Received action: {action}")  # Debugging line
 
-    if action == "stop":
-        bot_running["spam"] = False
-        spam.stop()
-        self_pinger.stop()
-        return web.Response(text="Bot tasks stopped.")
-    elif action == "start":
+    # Toggle the spam task
+    bot_running["spam"] = not bot_running["spam"]
+    if bot_running["spam"]:
         if not spam.is_running():
             spam.start()
-        if not self_pinger.is_running():
-            self_pinger.start()
-        bot_running["spam"] = True
+        logger.info("Bot tasks started.")
         return web.Response(text="Bot tasks started.")
     else:
-        return web.Response(text="Invalid action. Use ?action=start or ?action=stop.")
+        if spam.is_running():
+            spam.stop()
+        logger.info("Bot tasks stopped.")
+        return web.Response(text="Bot tasks stopped.")
 
 async def start_http_server():
     app = web.Application()
@@ -101,7 +76,6 @@ async def on_ready():
     logger.info(f'Logged in as {bot.user.name}')
     if bot_running["spam"]:
         spam.start()
-        self_pinger.start()
 
 # Run the bot
 bot.run(token)
