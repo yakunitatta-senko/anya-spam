@@ -68,6 +68,7 @@ async def before_self_pinger():
 async def handle_ping(request):
     global bot_running
     action = request.query.get("action", "").lower()
+    print(f"Received action: {action}")  # Debugging line
 
     if action == "stop":
         bot_running["spam"] = False
