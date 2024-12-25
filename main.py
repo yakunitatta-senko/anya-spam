@@ -3,58 +3,49 @@ import random
 import string
 import asyncio
 import logging
+from dotenv import load_dotenv
 import discord
 from discord.ext import commands, tasks
 from aiohttp import web
-from dotenv import load_dotenv
-
-# Install discord.py-self if not already installed
-os.system('pip install discord.py-self && pip install --upgrade pip')
-
-# Create a bot instance with sharding (manual control)
-bot = commands.Bot(command_prefix="!", help_command=None, self_bot=True)
-bot.channel = None
 
 # Load environment variables
 load_dotenv()
 token = os.getenv("TOKEN")
 
-# Maximum messages before stopping
-MAX_MESSAGES = 150
+# Create a bot instance with sharding (manual control)
+bot = commands.Bot(command_prefix="!", help_command=None, self_bot=True)
+bot.channel = None
 
-# Message counter
-message_count = 0
+# Initialize logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Task to spam messages with random intervals and incremental delay
+# Shared state for bot task control
+bot_running = {"spam": True}
+
+# Maximum messages before hard stop
+MAX_MESSAGES = 1e6  # Adjust as needed
+
+# Delay settings
+initial_delay = 0.001  # Start with 1 ms delay for push mode
+max_delay = 1.0  # Maximum delay of 1 second
+min_delay = 0.2  # Minimum delay of 0.2 seconds
+
+# Task to spam messages
 @tasks.loop(seconds=3)
 async def spam():
-    global message_count
     if bot.channel is None:
-        bot.channel = bot.get_channel(1278580578593148978)  # Replace with your channel ID
+        bot.channel = bot.get_channel(1278580578593148978)  # Your channel ID here
 
-    if bot.channel is not None:
+    if bot.channel is not None and bot_running["spam"]:
         try:
-            if message_count >= MAX_MESSAGES:
-                print(f"Reached the message limit of {MAX_MESSAGES}. Stopping the spam task.")
-                spam.stop()  # Stop the spam task
-                return
-
-            # Generate random text
             text = ''.join(random.sample(string.ascii_letters + string.digits, 40))
-
-            # Send the message
             await bot.channel.send(text)
             print(f"Sent message: {text}")
-
-            # Increment the counter
-            message_count += 1
-
-            # Random cooldown to simulate varying delay
             cooldown = random.uniform(1, 3)  # Cooldown between 1 and 3 seconds
             await asyncio.sleep(cooldown)
-
         except discord.HTTPException as e:
-            print(f"Failed to send message due to rate limit or server error: {e}")
+            logger.error(f"Failed to send message: {e}")
 
 @spam.before_loop
 async def before_spam():
@@ -63,47 +54,53 @@ async def before_spam():
 # Task for self-pinging to keep the bot alive
 @tasks.loop(seconds=60)
 async def self_pinger():
-    try:
-        if bot.channel is not None:
+    if bot.channel is not None and bot_running["spam"]:
+        try:
             await bot.channel.send("Pong!")
-    except discord.HTTPException as e:
-        print(f"Error during self-ping: {e}")
+        except discord.HTTPException as e:
+            logger.error(f"Error during self-ping: {e}")
 
 @self_pinger.before_loop
 async def before_self_pinger():
     await bot.wait_until_ready()
 
+# HTTP server to control the bot
+async def handle_ping(request):
+    global bot_running
+    action = request.query.get("action", "").lower()
+
+    if action == "stop":
+        bot_running["spam"] = False
+        spam.stop()
+        self_pinger.stop()
+        return web.Response(text="Bot tasks stopped.")
+    elif action == "start":
+        if not spam.is_running():
+            spam.start()
+        if not self_pinger.is_running():
+            self_pinger.start()
+        bot_running["spam"] = True
+        return web.Response(text="Bot tasks started.")
+    else:
+        return web.Response(text="Invalid action. Use ?action=start or ?action=stop.")
+
 async def start_http_server():
-    try:
-        app = web.Application()
-
-        # HTTP route to restart the spam task
-        async def restart_spam(request):
-            global message_count
-            if not spam.is_running():
-                message_count = 0  # Reset the counter
-                spam.start()  # Restart the spam task
-                return web.Response(text="Spam task restarted.")
-            return web.Response(text="Spam task is already running.")
-
-        app.router.add_get('/', lambda request: web.Response(text="Bot is running"))
-        app.router.add_post('/restart', restart_spam)
-
-        runner = web.AppRunner(app)
-        await runner.setup()
-        port = int(os.getenv("PORT", 8080))
-        site = web.TCPSite(runner, '0.0.0.0', port)
-        await site.start()
-        print(f"HTTP server started on port {port}")
-    except Exception as e:
-        logging.error(f"Failed to start HTTP server: {e}")
-        print("Failed to start HTTP server.")
+    app = web.Application()
+    app.router.add_get('/', handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logger.info(f"HTTP server started on port {port}")
 
 @bot.event
 async def on_ready():
     await start_http_server()
-    print(f'Logged in as {bot.user.name}')
-    spam.start()  # Start the spam task when the bot is ready
-    self_pinger.start()  # Start the self-pinger to keep the bot alive
+    logger.info(f'Logged in as {bot.user.name}')
+    if bot_running["spam"]:
+        spam.start()
+        self_pinger.start()
 
+# Run the bot
 bot.run(token)
